@@ -1,14 +1,21 @@
-from fastapi import FastAPI, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
 from sqlalchemy import text
-from qdrant_client.http.exceptions import UnexpectedResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.db.postgres import get_db
-from app.db.qdrant import qdrant
+from app.db.qdrant import init_qdrant_collections, qdrant_client
 
-# ... keep your existing create_app() setup ...
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_qdrant_collections()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
 
 @app.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
@@ -16,19 +23,17 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     health_status = {
         "api": "healthy",
         "postgres": "unhealthy",
-        "qdrant": "unhealthy"
+        "qdrant": "unhealthy",
     }
 
-    # 1. Test PostgreSQL
     try:
         await db.execute(text("SELECT 1"))
         health_status["postgres"] = "healthy"
     except Exception:
         pass
 
-    # 2. Test Qdrant
     try:
-        collections = await qdrant.get_collections()
+        await qdrant_client.get_collections()
         health_status["qdrant"] = "healthy"
     except Exception:
         pass
