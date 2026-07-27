@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     qdrant_host: str = Field("localhost", env="QDRANT_HOST")
     qdrant_port: int = Field(6333, env="QDRANT_PORT")
 
+    GITHUB_TOKEN: str = Field(..., env="GITHUB_TOKEN")
+    
     env: str = "development"
     debug: bool = True
 
