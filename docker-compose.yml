@@ -1,36 +1,41 @@
-version: "3.8"
 services:
-  web:
+  api:
     build: .
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/postgres
-      - QDRANT_URL=http://qdrant:6333
-    depends_on:
-      - db
-      - qdrant
     volumes:
       - .:/app
-
-  db:
-    image: postgres:15
-    restart: always
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      # In Docker, containers talk to each other using their service names, not "localhost"
+      - POSTGRES_HOST=postgres
+      - QDRANT_HOST=qdrant
+    depends_on:
+      - postgres
+      - qdrant
 
   qdrant:
     image: qdrant/qdrant:latest
     ports:
       - "6333:6333"
+      - "6334:6334"
     volumes:
-      - qdrant_storage:/qdrant/storage
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+      POSTGRES_DB: rag_metadata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
-  pgdata:
-  qdrant_storage:
+  qdrant_data:
+  postgres_data: 
