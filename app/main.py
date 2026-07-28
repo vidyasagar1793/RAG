@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.endpoint import documents
 from app.db.postgres import get_db
 from app.db.qdrant import init_qdrant_collections, qdrant_client
 
@@ -16,6 +17,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+app.include_router(
+    documents.router, 
+    prefix="/api/v1/documents", 
+    tags=["Documents"]
+)
 
 @app.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
