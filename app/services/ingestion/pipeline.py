@@ -2,11 +2,10 @@ import logging
 from pathlib import Path
 from qdrant_client import AsyncQdrantClient, models
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update
 
 from app.services.ingestion.parsers import PDFParser
-from app.services.ingestion.chunker import TokenAwareChunker
-from embeddings import GitHubEmbeddingService
+from app.services.ingestion.chunker import RecursiveTokenChunker
+from app.services.ingestion.embeddings import GitHubEmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +20,22 @@ class IngestionPipeline:
         self.qdrant = qdrant_client
         self.collection_name = collection_name
         
-        self.chunker = TokenAwareChunker(chunk_size=500, chunk_overlap=50)
+        self.chunker = RecursiveTokenChunker(chunk_size=500, chunk_overlap=50)
         self.embedding_service = GitHubEmbeddingService()
 
-    async def process_document(self, document_id: str, file_path: Path):
+    async def run(self, file_path: str, document_id: str, original_filename: str):
+        return await self.process_document(
+            document_id=document_id,
+            file_path=Path(file_path),
+            original_filename=original_filename,
+        )
+
+    async def process_document(
+        self,
+        document_id: str,
+        file_path: Path,
+        original_filename: str | None = None,
+    ):
         """
         Full ingestion pipeline:
         1. Update Postgres state to PROCESSING
@@ -32,9 +43,6 @@ class IngestionPipeline:
         try:
             logger.info(f"Starting ingestion for document {document_id}")
             
-            # 1. Update Postgres state to PROCESSING
-            await self._update_doc_status(document_id, "PROCESSING")
-
             # 2. Parse File (Assuming PDF for now; you can add a router here later)
             pages = PDFParser.parse(file_path)
 
@@ -70,22 +78,14 @@ class IngestionPipeline:
                     wait=True  # Ensure write is confirmed
                 )
 
-            # 6. Mark as COMPLETED in Postgres
-            await self._update_doc_status(document_id, "COMPLETED", total_chunks=len(chunks))
             logger.info(f"Successfully processed and stored {len(chunks)} chunks for {document_id}")
+            return {
+                "document_id": document_id,
+                "filename": original_filename or file_path.name,
+                "page_count": len(pages),
+                "chunk_count": len(chunks),
+            }
 
         except Exception as e:
             logger.error(f"Pipeline failed for {document_id}: {str(e)}")
-            # Mark as FAILED so the UI knows
-            await self._update_doc_status(document_id, "FAILED")
             raise
-
-    async def _update_doc_status(self, doc_id: str, status: str, total_chunks: int = 0):
-        """Helper to safely update Postgres state"""
-        stmt = (
-            update(DocumentModel)
-            .where(DocumentModel.id == doc_id)
-            .values(status=status, total_chunks=total_chunks)
-        )
-        await self.db.execute(stmt)
-        await self.db.commit()

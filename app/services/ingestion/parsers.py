@@ -2,7 +2,7 @@ import fitz  # PyMuPDF
 from pathlib import Path
 from typing import List
 import logging
-from models import ExtractedPage
+from app.services.ingestion.models import ExtractedPage
 
 logger = logging.getLogger(__name__)
 
