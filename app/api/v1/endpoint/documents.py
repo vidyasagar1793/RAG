@@ -1,78 +1,90 @@
-import os
-import tempfile
-import uuid
 import logging
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http import models as qmodels
+from typing import Optional
 
-from app.db.postgres import get_db
-from app.db.qdrant import get_qdrant
-from app.services.ingestion.pipeline import IngestionPipeline
-
-logger = logging.getLogger(__name__)
+# Adjust these imports based on your exact internal routing as seen in image_53ab20.png
+from app.db.qdrant import get_qdrant_client
+from app.services.ingestion.embeddings import GitHubEmbeddingService
+from app.schemas.search import SearchResponse, SearchResultItem
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-class DocumentUploadResponse(BaseModel):
-    document_id: str
-    filename: str
-    status: str
-    page_count: int
-    chunk_count: int
+# Assuming you have a dependency to provide the embedding service
+def get_embedding_service() -> GitHubEmbeddingService:
+    return GitHubEmbeddingService()
 
-@router.post(
-    "/upload", 
-    response_model=DocumentUploadResponse, 
-    status_code=status.HTTP_201_CREATED
-)
-async def upload_pdf(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    qdrant: AsyncQdrantClient = Depends(get_qdrant)
+@router.get("/search", response_model=SearchResponse, status_code=status.HTTP_200_OK)
+async def search_documents(
+    q: str = Query(..., min_length=2, description="The semantic search query"),
+    limit: int = Query(5, ge=1, le=50, description="Maximum number of results to return"),
+    file_name: Optional[str] = Query(None, description="Optional exact file name to filter by"),
+    qdrant_client: AsyncQdrantClient = Depends(get_qdrant_client),
+    embedding_service: GitHubEmbeddingService = Depends(get_embedding_service)
 ):
-    # 1. Validate file extension & MIME type
-    if not file.filename.endswith(".pdf") or file.content_type != "application/pdf":
+    """
+    Perform a semantic search over ingested document chunks.
+    Allows optional metadata filtering by file_name.
+    """
+    try:
+        # 1. Generate embeddings for the search query
+        # We pass [q] because generate_embeddings expects a List[str]
+        query_vectors = await embedding_service.generate_embeddings([q])
+        
+        if not query_vectors or len(query_vectors) == 0:
+            raise ValueError("Embedding service failed to return a vector.")
+            
+        query_vector = query_vectors[0]
+
+        # 2. Construct optional Qdrant metadata filters
+        query_filter = None
+        if file_name:
+            query_filter = qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="file_name",
+                        match=qmodels.MatchValue(value=file_name)
+                    )
+                ]
+            )
+
+        # 3. Execute Async Search against Qdrant
+        search_results = await qdrant_client.search(
+            collection_name="document_chunks",
+            query_vector=query_vector,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True
+        )
+
+        # 4. Map Qdrant ScoredPoints to Pydantic Response schema
+        results = []
+        for point in search_results:
+            payload = point.payload or {}
+            results.append(
+                SearchResultItem(
+                    text=payload.get("text", ""),
+                    score=point.score,
+                    file_name=payload.get("file_name", "unknown"),
+                    page_number=payload.get("page_number", 0),
+                    document_id=payload.get("document_id", ""),
+                    chunk_index=payload.get("chunk_index", 0)
+                )
+            )
+
+        return SearchResponse(query=q, results=results)
+
+    except ValueError as ve:
+        logger.error(f"Validation/Embedding error during search: {str(ve)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file type. Only PDF documents are supported."
+            detail="Invalid request or embedding generation failed."
         )
-
-    document_id = str(uuid.uuid4())
-    temp_file_path = None
-
-    try:
-        # 2. Write incoming stream to a temporary disk location
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            temp_file_path = tmp_file.name
-
-        # 3. Instantiate and run the Ingestion Pipeline
-        pipeline = IngestionPipeline(db_session=db, qdrant_client=qdrant)
-        result = await pipeline.run(
-            file_path=temp_file_path, 
-            document_id=document_id, 
-            original_filename=file.filename
-        )
-
-        return DocumentUploadResponse(
-            document_id=document_id,
-            filename=file.filename,
-            status="completed",
-            page_count=result.get("page_count", 0),
-            chunk_count=result.get("chunk_count", 0)
-        )
-
     except Exception as e:
-        logger.error(f"Failed to process uploaded PDF {file.filename}: {str(e)}", exc_info=True)
+        logger.error(f"Search API encountered an unexpected error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while ingesting the document: {str(e)}"
+            detail="An internal error occurred while searching documents."
         )
-
-    finally:
-        # 4. Always ensure the temporary file is deleted from disk
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
