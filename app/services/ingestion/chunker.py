@@ -19,7 +19,11 @@ class RecursiveTokenChunker:
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.tokenizer = tiktoken.encoding_for_model(model_name)
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            # Local embedding model names are not necessarily registered by tiktoken.
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
         # Default boundary hierarchy: Paragraphs -> Sentences -> Words -> Characters
         self.separators = separators or ["\n\n", "\n", ". ", " ", ""]

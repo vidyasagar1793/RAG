@@ -7,6 +7,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EMBEDDING_DIMENSION = 768  # nomic-embed-text
+
 qdrant_client = AsyncQdrantClient(
     url=f"http://{settings.qdrant_host}:{settings.qdrant_port}",
 )
@@ -23,7 +25,7 @@ async def init_qdrant_collections() -> None:
         await qdrant_client.create_collection(
             collection_name=collection_name,
             vectors_config=models.VectorParams(
-                size=1536,
+                size=DEFAULT_EMBEDDING_DIMENSION,
                 distance=models.Distance.COSINE,
             ),
         )

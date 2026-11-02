@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     qdrant_port: int = Field(6333, env="QDRANT_PORT")
 
     GITHUB_TOKEN: str = Field(..., env="GITHUB_TOKEN")
+    ollama_api_key: str | None = Field(None, env="OLLAMA_API_KEY")
     
     env: str = "development"
     debug: bool = True
